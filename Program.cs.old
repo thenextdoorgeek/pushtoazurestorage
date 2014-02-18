@@ -5,43 +5,63 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Configuration;
-using Microsoft.WindowsAzure.Jobs;
+using Microsoft.WindowsAzure.Storage;
+using Microsoft.WindowsAzure.Storage.Auth;
+using Microsoft.WindowsAzure.Storage.Blob;
+using System.Diagnostics;
 
 namespace PushToStorage
 {
     class AzureStorageHelper
     {
+        CloudStorageAccount storageAccount;
+        CloudBlobClient blobClient;
+        CloudBlobContainer container;
+        CloudBlockBlob blockBlob;
         bool deleteAfterUpload = false;
-        JobHost _host;
-        public AzureStorageHelper(JobHost host)
+        public AzureStorageHelper()
         {
-            _host = host;
+            // Retrieve storage account from connection string.
+            storageAccount = CloudStorageAccount.Parse(ConfigurationManager.ConnectionStrings["StorageConnectionString"].ConnectionString);
+
+            // Create the blob client.
+            blobClient = storageAccount.CreateCloudBlobClient();
+
+            // Retrieve a reference to a container. 
+            container = blobClient.GetContainerReference("freblogs");
+
+            // Create the container if it doesn't already exist.
+            container.CreateIfNotExists();
             string tmp = ConfigurationManager.AppSettings["DeleteAfterUpload"];
             if (tmp != null)
             {
                 deleteAfterUpload = (Int32.Parse(tmp) == 1) ? true : false;
             }
+
         }
 
-        public static void Upload(string name, string path, // Local file 
-                                    [BlobOutput("freblogs/{name}")] Stream output,
-                                    bool deleteAfterUpload)
-        {
-            using (var fileStream = System.IO.File.OpenRead(path))
-            {
-                fileStream.CopyTo(output);
-            }
-
-            if (deleteAfterUpload)
-            {
-                File.Delete(path);
-            }
-        }
         public void UploadFileToBlob(string name, string path)
         {
-            Console.WriteLine("UploadFileToBlob('" + name + "','" + path + "')");
-            var method = typeof(AzureStorageHelper).GetMethod("Upload");
-            _host.Call(method, new { name = name, path = path, deleteAfterUpload = deleteAfterUpload });
+            try
+            {
+                Console.WriteLine("Starting uploading " + name);
+                using (var fileStream = System.IO.File.OpenRead(path))
+                {
+                    blockBlob = container.GetBlockBlobReference(name);
+                    blockBlob.UploadFromStream(fileStream);
+                    Console.WriteLine(name + " successfully uploaded!");
+                    if (deleteAfterUpload)
+                    {
+                        fileStream.Close();
+                        File.Delete(path);
+                        Console.WriteLine(path + " deleted!");
+                    }
+                }
+            }
+            catch (Exception ee)
+            {
+                Console.WriteLine(ee.Message);
+            }
         }
 
         public bool IsFileReady(String sFilename)
@@ -68,10 +88,10 @@ namespace PushToStorage
         static void Main(string[] args)
         {
             Console.WriteLine("Initializing AzureStorageHelper!");
-            JobHost host = new JobHost();
-            azStorageHelper = new AzureStorageHelper(host);
+            azStorageHelper = new AzureStorageHelper();
 
             string path = ConfigurationManager.AppSettings["directory"];
+
             string[] directories = Directory.GetDirectories(path, "*W3SVC*");
 
             FileSystemWatcher[] fsw = new FileSystemWatcher[directories.Length];
@@ -86,12 +106,12 @@ namespace PushToStorage
                 Console.WriteLine(String.Format("{0} Started watching directory {1} for files!", DateTime.Now.ToString(), directories[i]));
             }
 
-            host.RunAndBlock();
+            Console.ReadLine();
+            Console.WriteLine(DateTime.Now.ToString() + " Stopping!");
         }
 
         static void fsw_Created(object sender, FileSystemEventArgs e)
         {
-            Console.WriteLine(e.Name);
             FileInfo fileInfo = new FileInfo(e.FullPath);
             while (!azStorageHelper.IsFileReady(e.FullPath))
                 System.Threading.Thread.Sleep(1000);
